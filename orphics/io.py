@@ -2,14 +2,17 @@ from __future__ import print_function
 import matplotlib
 import matplotlib as mpl
 from cycler import cycler
-mpl.rcParams['axes.prop_cycle'] = cycler(color=['#2424f0','#df6f0e','#3cc03c','#d62728','#b467bd','#ac866b','#e397d9','#9f9f9f','#ecdd72','#77becf'])
+#mpl.rcParams['axes.prop_cycle'] = cycler(color=['#2424f0','#df6f0e','#3cc03c','#d62728','#b467bd','#ac866b','#e397d9','#9f9f9f','#ecdd72','#77becf'])
 import matplotlib.pyplot as plt
+# import seaborn as sns
+# sns.set()
+
+
 import numpy as np
 import os,sys,logging,time
 import contextlib
 import itertools
 import traceback
-from pixell import enmap
 
 try:
     dout_dir = os.environ['WWW']+"plots/"
@@ -181,7 +184,9 @@ def list_strings_from_config(Config,section,name):
 
 ### PLOTTING
 
+
 def layered_contour(imap,imap_contour,contour_levels,contour_color,contour_width=1,mask=None,filename=None,**kwargs):
+    from pixell import enplot
     p1 = enplot.plot(imap,layers=True,mask=mask,**kwargs)
     p2 = enplot.plot(imap_contour,layers=True,contours=contour_levels,contour_width=contour_width,mask=mask,contour_color=contour_color)
     p1 += [a for a in p2 if "cont" in a.name]
@@ -198,9 +203,11 @@ def power_crop(p2d,N,fname,ftrans=True,**kwargs):
     plot_img(pimg,fname,aspect='auto',**kwargs)
 
 def fplot(img,savename=None,verbose=True,**kwargs):
+    from pixell import enmap
     hplot(enmap.samewcs(np.fft.fftshift(np.log10(img)),img),savename=savename,verbose=verbose,**kwargs)
 
 def mplot(img,savename=None,verbose=True,**kwargs):
+    from pixell import enmap
     plot_img(enmap.samewcs(np.fft.fftshift(np.log10(img)),img),filename=savename,verbose=verbose,**kwargs)
     
 def hplot(img,savename=None,verbose=True,grid=False,**kwargs):
@@ -236,7 +243,7 @@ def hist(data,bins=10,save_file=None,verbose=True,**kwargs):
     return ret
         
 
-def mollview(hp_map,filename=None,lim=None,coord='C',verbose=True,return_projected_map=False,**kwargs):
+def mollview(hp_map,filename=None,lim=None,coord='C',verbose=True,return_projected_map=False,xsize=1200,**kwargs):
     '''
     mollview plot for healpix wrapper
     '''
@@ -248,13 +255,13 @@ def mollview(hp_map,filename=None,lim=None,coord='C',verbose=True,return_project
     else:
         cmin =-lim
         cmax = lim
-    retimg = hp.mollview(hp_map,min=cmin,max=cmax,coord=coord,return_projected_map=return_projected_map,**kwargs)
+    retimg = hp.mollview(hp_map,min=cmin,max=cmax,coord=coord,return_projected_map=return_projected_map,xsize=xsize,**kwargs)
     if filename is not None:
         plt.savefig(filename)
         if verbose: cprint("Saved healpix plot to "+ filename,color="g")
     if return_projected_map: return retimg
 
-def plot_img(array,filename=None,verbose=True,ftsize=14,high_res=False,flip=True,down=None,crange=None,cmap=None,arc_width=None,xlabel="",ylabel="",**kwargs):
+def plot_img(array,filename=None,verbose=True,ftsize=14,high_res=False,flip=True,down=None,crange=None,cmap=None,arc_width=None,xlabel="",ylabel="",figsize=None,quiver=None,label=None,**kwargs):
     if array.ndim>2: array = array.reshape(-1,*array.shape[-2:])[0] # Only plot the first component
     if flip: array = np.flipud(array)
     if high_res:
@@ -262,13 +269,23 @@ def plot_img(array,filename=None,verbose=True,ftsize=14,high_res=False,flip=True
         high_res_plot_img(array,filename,verbose=verbose,down=down,crange=crange,cmap=cmap,**kwargs)
     else:
         extent = None if arc_width is None else [-arc_width/2.,arc_width/2.,-arc_width/2.,arc_width/2.]
-        pl = Plotter(ftsize=ftsize,xlabel=xlabel,ylabel=ylabel)
-        pl.plot2d(array,extent=extent,cm=cmap,**kwargs)
+        pl = Plotter(ftsize=ftsize,xlabel=xlabel,ylabel=ylabel,figsize=figsize)
+        pl.plot2d(array,extent=extent,cm=cmap,label=label,**kwargs)
+
+        if quiver is not None:
+            assert arc_width is not None
+            ny,nx = array.shape
+            ax = np.linspace(-arc_width/2., arc_width/2., nx)
+            ay = np.linspace(-arc_width/2., arc_width/2., ny)
+            x,y = np.meshgrid(ax, ay)
+            q = pl._ax.quiver(x,y,quiver[1],quiver[0])
         pl.done(filename,verbose=verbose)
 
 
 
 def high_res_plot_img(array,filename=None,down=None,verbose=True,overwrite=True,crange=None,cmap="planck"):
+    from pixell import enmap
+
     if not(overwrite):
         if os.path.isfile(filename): return
     try:
@@ -297,46 +314,48 @@ class Plotter(object):
     Fast, easy, and pretty publication-quality plots
     '''
 
-    def __init__(self,scheme=None,xlabel=None,ylabel=None,xyscale=None,xscale="linear",yscale="linear",ftsize=14,thk=1,labsize=None,major_tick_size=5,minor_tick_size=3,scalefn = lambda x: 1,**kwargs):
+    def __init__(self,scheme=None,xlabel=None,ylabel=None,xyscale=None,xscale="linear",yscale="linear",ftsize=14,thk=1,labsize=None,major_tick_size=5,minor_tick_size=3,scalefn = None,**kwargs):
+        self.scalefn = None
         if scheme is not None:
-            if scheme=='Dell':
+            if scheme=='Dell' or scheme=='Dl':
                 xlabel = '$\\ell$' if xlabel is None else xlabel
                 ylabel = '$D_{\\ell}$' if ylabel is None else ylabel
                 xyscale = 'linlog' if xyscale is None else xyscale
-                scalefn = lambda x: x**2./2./np.pi
-            elif scheme=='Cell':
+                self.scalefn = (lambda x: x**2./2./np.pi) if scalefn is None else scalefn
+            elif scheme=='Cell' or scheme=='Cl':
                 xlabel = '$\\ell$' if xlabel is None else xlabel
                 ylabel = '$C_{\\ell}$' if ylabel is None else ylabel
                 xyscale = 'linlog' if xyscale is None else xyscale
-                scalefn = lambda x: 1
+                self.scalefn = (lambda x: 1)  if scalefn is None else scalefn
             elif scheme=='CL':
                 xlabel = '$L$' if xlabel is None else xlabel
                 ylabel = '$C_{L}$' if ylabel is None else ylabel
                 xyscale = 'linlog' if xyscale is None else xyscale
-                scalefn = lambda x: 1
+                self.scalefn = (lambda x: 1)  if scalefn is None else scalefn
             elif scheme=='LCL':
                 xlabel = '$L$' if xlabel is None else xlabel
                 ylabel = '$LC_{L}$' if ylabel is None else ylabel
                 xyscale = 'linlin' if xyscale is None else xyscale
-                scalefn = lambda x: x
-            elif scheme=='rCell':
+                self.scalefn = (lambda x: x)  if scalefn is None else scalefn
+            elif scheme=='rCell' or scheme=='rCl':
                 xlabel = '$\\ell$' if xlabel is None else xlabel
                 ylabel = '$\\Delta C_{\\ell} / C_{\\ell}$' if ylabel is None else ylabel
                 xyscale = 'linlin' if xyscale is None else xyscale
-                scalefn = lambda x: 1
-            elif scheme=='dCell':
+                self.scalefn = (lambda x: 1)  if scalefn is None else scalefn
+            elif scheme=='dCell' or scheme=='dCl':
                 xlabel = '$\\ell$' if xlabel is None else xlabel
                 ylabel = '$\\Delta C_{\\ell}$' if ylabel is None else ylabel
                 xyscale = 'linlin' if xyscale is None else xyscale
-                scalefn = lambda x: 1
+                self.scalefn = (lambda x: 1)  if scalefn is None else scalefn
             elif scheme=='rCL':
                 xlabel = '$L$' if xlabel is None else xlabel
                 ylabel = '$\\Delta C_{L} / C_{L}$' if ylabel is None else ylabel
                 xyscale = 'linlin' if xyscale is None else xyscale
-                scalefn = lambda x: 1
+                self.scalefn = (lambda x: 1)  if scalefn is None else scalefn
             else:
                 raise ValueError
-        self.scalefn = scalefn
+        if self.scalefn is None: 
+            self.scalefn = (lambda x: 1) if scalefn is None else scalefn
         if xyscale is not None:
             scalemap = {'log':'log','lin':'linear'}
             xscale = scalemap[xyscale[:3]]
@@ -365,8 +384,8 @@ class Plotter(object):
         if xlabel!=None: self._ax.set_xlabel(xlabel,fontsize=ftsize)
         if ylabel!=None: self._ax.set_ylabel(ylabel,fontsize=ftsize)
 
-        self._ax.set_xscale(xscale, nonposx='clip') 
-        self._ax.set_yscale(yscale, nonposy='clip')
+        self._ax.set_xscale(xscale) 
+        self._ax.set_yscale(yscale)
 
 
         if labsize is None: labsize=ftsize-2
@@ -382,30 +401,30 @@ class Plotter(object):
 
         return legend
            
-    def add(self,x,y,label=None,lw=2,linewidth=None,**kwargs):
+    def add(self,x,y,label=None,lw=2,linewidth=None,addx=0,**kwargs):
         if linewidth is not(None): lw = linewidth
         if label is not None: self.do_legend = True
         scaler = self.scalefn(x)
         yc = y*scaler
-        return self._ax.plot(x,yc,label=label,linewidth=lw,**kwargs)
+        return self._ax.plot(x+addx,yc,label=label,linewidth=lw,**kwargs)
 
 
     def hist(self,data,**kwargs):
         return self._ax.hist(data,**kwargs)
     
         
-    def add_err(self,x,y,yerr,ls='none',band=False,alpha=1.,marker="o",elinewidth=2,markersize=4,label=None,mulx=1.,addx=0.,**kwargs):
+    def add_err(self,x,y,yerr,ls='none',band=False,alpha=1.,marker="o",color=None,elinewidth=2,markersize=4,label=None,mulx=1.,addx=0.,edgecolor=None,**kwargs):
         scaler = self.scalefn(x)
         yc = y*scaler
         yerrc = yerr*scaler
         if band:
-            self._ax.plot(x*mulx+addx,yc,ls=ls,marker=marker,label=label,markersize=markersize,**kwargs)
-            self._ax.fill_between(x*mulx+addx, yc-yerrc, y+yerrc, alpha=alpha)
+            self._ax.plot(x*mulx+addx,yc,ls=ls,marker=marker,label=label,markersize=markersize,color=color,**kwargs)
+            self._ax.fill_between(x*mulx+addx, yc-yerrc, y+yerrc, alpha=alpha,color=color,edgecolor=edgecolor)
         else:
-            self._ax.errorbar(x*mulx+addx,yc,yerr=yerrc,ls=ls,marker=marker,elinewidth=elinewidth,markersize=markersize,label=label,alpha=alpha,**kwargs)
+            self._ax.errorbar(x*mulx+addx,yc,yerr=yerrc,ls=ls,marker=marker,elinewidth=elinewidth,markersize=markersize,label=label,alpha=alpha,color=color,**kwargs)
         if label is not None: self.do_legend = True
 
-    def plot2d(self,data,lim=None,levels=None,clip=0,clbar=True,cm=None,label=None,labsize=14,extent=None,ticksize=12,**kwargs):
+    def plot2d(self,data,lim=None,levels=None,clip=0,clbar=True,cm=None,label=None,labsize=14,extent=None,ticksize=12,disable_grid=False,**kwargs):
         '''
         For an array passed in as [j,i]
         Displays j along y and i along x , so (y,x)
@@ -425,7 +444,11 @@ class Plotter(object):
             limmin=-lim
             limmax = lim
 
+        if extent is None:
+            extent = (0, arr.shape[1], arr.shape[0], 0)
         img = self._ax.imshow(arr,interpolation="none",vmin=limmin,vmax=limmax,cmap=cm,extent=extent,**kwargs)
+        if disable_grid: self._ax.grid(b=None)
+        
 
         if levels!=None:
            self._ax.contour(arr,levels=levels,extent=extent,origin="upper",colors=['black','black'],linestyles=['--','-'])

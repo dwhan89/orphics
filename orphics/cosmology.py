@@ -921,8 +921,17 @@ def validateMapType(mapXYType):
 def default_theory(lpad=9000):
     cambRoot = os.path.dirname(__file__)+"/../data/cosmo2017_10K_acc3"
     return loadTheorySpectraFromCAMB(cambRoot,unlensedEqualsLensed=False,useTotal=False,TCMB = 2.7255e6,lpad=lpad,get_dimensionless=False)
-    
-def loadTheorySpectraFromCAMB(cambRoot,unlensedEqualsLensed=False,useTotal=False,TCMB = 2.7255e6,lpad=9000,get_dimensionless=True):
+
+def planck_theory(ells,ellmax=2000):
+    fname = os.path.dirname(__file__)+"/../data/COM_PowerSpect_CMB-TT-full_R3.01.txt"
+    ls,dells = np.loadtxt(fname,usecols=[0,1],unpack=True)
+    cells = dells/ls/(ls+1.)*2*np.pi
+    cells = cells[ls<ellmax]
+    ls = ls[ls<ellmax]
+    return interp1d(ls,cells,bounds_error=False,fill_value=0.)(ells)
+
+
+def loadTheorySpectraFromCAMB(cambRoot,unlensedEqualsLensed=False,useTotal=False,TCMB = 2.7255e6,lpad=9000,get_dimensionless=True,skip_lens=False,dells=False):
     '''
     Given a CAMB path+output_root, reads CMB and lensing Cls into 
     an orphics.theory.gaussianCov.TheorySpectra object.
@@ -948,7 +957,8 @@ def loadTheorySpectraFromCAMB(cambRoot,unlensedEqualsLensed=False,useTotal=False
     theory = TheorySpectra()
 
     ell, lcltt, lclee, lclbb, lclte = np.loadtxt(lFile,unpack=True,usecols=[0,1,2,3,4])
-    mult = 2.*np.pi/ell/(ell+1.)/TCMB**2.
+    lfact = 2.*np.pi/ell/(ell+1.) if not(dells) else 1
+    mult = lfact/TCMB**2.
     lcltt *= mult
     lclee *= mult
     lclte *= mult
@@ -958,14 +968,15 @@ def loadTheorySpectraFromCAMB(cambRoot,unlensedEqualsLensed=False,useTotal=False
     theory.loadCls(ell,lclee,'EE',lensed=True,interporder="linear",lpad=lpad)
     theory.loadCls(ell,lclbb,'BB',lensed=True,interporder="linear",lpad=lpad)
 
-    try:
-        elldd, cldd = np.loadtxt(cambRoot+"_lenspotentialCls.dat",unpack=True,usecols=[0,5])
-        clkk = 2.*np.pi*cldd/4.
-    except:
-        elldd, cldd = np.loadtxt(cambRoot+"_scalCls.dat",unpack=True,usecols=[0,4])
-        clkk = cldd*(elldd+1.)**2./elldd**2./4./TCMB**2.
-        
-    theory.loadGenericCls(elldd,clkk,"kk",lpad=lpad)
+    if not(skip_lens):
+        try:
+            elldd, cldd = np.loadtxt(cambRoot+"_lenspotentialCls.dat",unpack=True,usecols=[0,5])
+            clkk = 2.*np.pi*cldd/4.
+        except:
+            elldd, cldd = np.loadtxt(cambRoot+"_scalCls.dat",unpack=True,usecols=[0,4])
+            clkk = cldd*(elldd+1.)**2./elldd**2./4./TCMB**2.
+
+        theory.loadGenericCls(elldd,clkk,"kk",lpad=lpad)
 
 
     if unlensedEqualsLensed:
@@ -977,7 +988,8 @@ def loadTheorySpectraFromCAMB(cambRoot,unlensedEqualsLensed=False,useTotal=False
 
     else:
         ell, cltt, clee, clte = np.loadtxt(uFile,unpack=True,usecols=[0,1,2,3])
-        mult = 2.*np.pi/ell/(ell+1.)/TCMB**2.
+        lfact = 2.*np.pi/ell/(ell+1.) if not(dells) else 1
+        mult = lfact/TCMB**2.
         cltt *= mult
         clee *= mult
         clte *= mult
@@ -1075,7 +1087,7 @@ class LensForecast:
         if Nls is not None: self.Nls[specType] = interp1d(ellsNls,Nls,bounds_error=False,fill_value=np.inf)
         self.theory.loadGenericCls(ellsCls,Cls,specType)
         
-    def _bin_cls(self,spec,ell_left,ell_right,noise=True):
+    def _bin_cls(self,spec,ell_left,ell_right,noise=True,ntot=False):
         a,b = spec
         ells = np.arange(ell_left,ell_right+1,1)
         cls = self.theory.gCl(spec,ells)
@@ -1085,15 +1097,18 @@ class LensForecast:
                 Noise = self.Nls[spec](ells)
             else:
                 Noise = 0.
-        tot = cls+Noise
+        if ntot and a==b and noise: 
+            tot = Noise
+        else:
+            tot = cls+Noise
         return np.sum(ells*tot)/np.sum(ells)
 
-    def KnoxCov(self,specTypeXY,specTypeWZ,ellBinEdges,fsky):
+    def KnoxCov(self,specTypeXY,specTypeWZ,ellBinEdges,fsky,ntot=False):
         '''
         returns cov(Cl_XY,Cl_WZ),signalToNoise(Cl_XY)^2, signalToNoise(Cl_WZ)^2
         '''
         def ClTot(spec,ell1,ell2):
-            binned = self._bin_cls(spec,ell1,ell2,noise=True)
+            binned = self._bin_cls(spec,ell1,ell2,noise=True,ntot=ntot)
             return binned
         
         X, Y = specTypeXY
@@ -1118,12 +1133,12 @@ class LensForecast:
 
         return np.array(covs), np.array(sigs1), np.array(sigs2)
 
-    def sigmaClSquared(self,specType,ellBinEdges,fsky):
-        return self.KnoxCov(specType,specType,ellBinEdges,fsky)[0]
+    def sigmaClSquared(self,specType,ellBinEdges,fsky,ntot=False):
+        return self.KnoxCov(specType,specType,ellBinEdges,fsky,ntot=ntot)[0]
 
-    def sn(self,ellBinEdges,fsky,specType):
+    def sn(self,ellBinEdges,fsky,specType,ntot=False):
         
-        var, sigs1, sigs2 = self.KnoxCov(specType,specType,ellBinEdges,fsky)
+        var, sigs1, sigs2 = self.KnoxCov(specType,specType,ellBinEdges,fsky,ntot=ntot)
 
         signoise = np.sqrt(sigs1.sum())
         errs = np.sqrt(var)
@@ -1642,3 +1657,85 @@ def load_theory_from_glens(out_name,total=False,lpad=9000,TCMB=2.7255e6):
     theory.dimensionless = False
     return theory
     
+
+
+def get_lss_cls(windows,lmax,nonlinear=True,params=None):
+    from camb.sources import GaussianSourceWindow, SplinedSourceWindow
+    from camb import model
+    if params is None: params = dict(defaultCosmology)
+    p = params
+    pars = camb.CAMBparams()
+    pars.set_cosmology(H0=p['H0'], ombh2=p['ombh2'], omch2=p['omch2'])
+    pars.InitPower.set_params(As=p['As'], ns=p['ns'])
+    pars.set_for_lmax(lmax, lens_potential_accuracy=1)
+    pars.Want_CMB = False 
+    #NonLinear_both or NonLinear_lens will use non-linear corrections
+    if nonlinear:
+        pars.NonLinear = model.NonLinear_both
+    else:
+        pars.NonLinear = None
+
+    sws = []
+    aws = dict(windows)
+    wkeys = list(aws.keys())
+    for key in wkeys:
+        assert ('P' not in key) and ('x' not in key), "The letters P and x are not allowed in window names."
+        ws = aws[key]
+        stype = ws['stype'].strip().lower()
+        if stype=='counts':
+            bias = ws['b']
+            try:
+                dlog10Ndm = ws['dlog10Ndm']
+            except:
+                dlog10Ndm = -0.2
+        elif stype=='lensing':
+            bias = 0
+            dlog10Ndm = 0
+        else:
+            raise ValueError
+        wtype = ws['wtype'].strip().lower()
+        if wtype=='gaussian':
+            wfunc = GaussianSourceWindow
+            redshift = ws['zmean']
+            sigma = ws['zsigma']
+            sws = sws + [wfunc(source_type=stype,bias=bias,dlog10Ndm=dlog10Ndm,redshift=redshift,sigma=sigma)]
+        elif wtype=='spline':
+            wfunc = SplinedSourceWindow
+            zs = ws['zs']
+            dndz = ws['dndz']
+            sws = sws + [wfunc(source_type=stype,bias=bias,dlog10Ndm=dlog10Ndm,z=zs,W=dndz)]
+        else:
+            raise ValueError
+
+    pars.SourceWindows = [*sws]
+    results = camb.get_results(pars)
+    cls = results.get_source_cls_dict()
+    odict = {}
+    ls = np.arange(cls['PxP'].size)    
+    for key in cls.keys():
+        w1,w2 = key.split('x')
+        if w1=='P':
+            mul1 = 1./2.
+            ow1 = 'CMB'
+        else:
+            a,ind = w1[0],int(w1[1:])
+            assert a=='W'
+            assert ind>0
+            ow1 = wkeys[ind-1]
+            with np.errstate(divide='ignore',invalid='ignore'):                     
+                mul1 = 1./np.sqrt(ls*(ls+1.))
+        if w2=='P':
+            mul2 = 1./2.
+            ow2 = 'CMB'
+        else:
+            a,ind = w2[0],int(w2[1:])
+            assert a=='W'
+            assert ind>0
+            ow2 = wkeys[ind-1]
+            with np.errstate(divide='ignore',invalid='ignore'):                     
+                mul2 = 1./np.sqrt(ls*(ls+1.))
+                
+        mul = mul1 * mul2 * 2. * np.pi
+        odict[f'{ow1}x{ow2}'] = cls[key] * mul
+        
+    return odict
